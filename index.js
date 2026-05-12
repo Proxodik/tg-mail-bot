@@ -1,4 +1,5 @@
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
 import { Telegraf } from 'telegraf';
 import 'dotenv/config';
 
@@ -7,26 +8,25 @@ const seenIds = new Set();
 
 async function checkEmails() {
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
   });
 
   const page = await browser.newPage();
 
-  // Логинимся
   await page.goto('https://studentmail.ukf.sk/webmail/', { waitUntil: 'networkidle2' });
   await page.type('input[name="_user"]', process.env.EMAIL);
   await page.type('input[name="_pass"]', process.env.PASSWORD);
   await page.click('input[type="submit"]');
   await page.waitForNavigation({ waitUntil: 'networkidle2' });
 
-  // Ждём загрузки списка писем
   await page.waitForSelector('tr.message', { timeout: 10000 });
-  // Получаем непрочитанные письма
   const emails = await page.evaluate(() => {
     const rows = document.querySelectorAll('tr.message.unread');
     return Array.from(rows).map(row => {
-      const uid = row.id.replace('rcmrow', ''); // достаём UID из id="rcmrow224"
+      const uid = row.id.replace('rcmrow', '');
       const subjectEl = row.querySelector('td.subject a');
       const fromEl = row.querySelector('td.from span');
       const dateEl = row.querySelector('td.date');
@@ -47,20 +47,17 @@ async function checkEmails() {
     if (seenIds.has(email.uid)) continue;
     seenIds.add(email.uid);
 
-    // Открываем письмо по прямой ссылке
     await page.goto(
         `https://studentmail.ukf.sk/webmail/?_task=mail&_action=show&_mbox=INBOX&_uid=${email.uid}`,
         { waitUntil: 'networkidle2' }
     );
 
-    // Ждём тело письма
     await page.waitForSelector('#messagebody', { timeout: 8000 }).catch(() => {});
 
     const body = await page.evaluate(() => {
       return document.querySelector('#messagebody')?.innerText?.slice(0, 1000) || '(нет текста)';
     });
 
-    // Экранируем спецсимволы для Markdown
     const safe = (str) => str.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
 
     const text =
@@ -76,7 +73,6 @@ async function checkEmails() {
 
     console.log(`✅ Отправлено: ${email.subject}`);
 
-    // Возвращаемся к списку писем
     await page.goto('https://studentmail.ukf.sk/webmail/?_task=mail', { waitUntil: 'networkidle2' });
     await page.waitForSelector('tr.message', { timeout: 10000 });
   }
