@@ -1,5 +1,4 @@
-import puppeteer from 'puppeteer-core';
-import chromium from '@sparticuz/chromium';
+import { chromium } from 'playwright-core';
 import { Telegraf } from 'telegraf';
 import 'dotenv/config';
 
@@ -7,22 +6,26 @@ const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const seenIds = new Set();
 
 async function checkEmails() {
-  const browser = await puppeteer.launch({
-    args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(),
-    headless: chromium.headless,
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
   });
 
   const page = await browser.newPage();
 
-  await page.goto('https://studentmail.ukf.sk/webmail/', { waitUntil: 'networkidle2' });
-  await page.type('input[name="_user"]', process.env.EMAIL);
-  await page.type('input[name="_pass"]', process.env.PASSWORD);
+  await page.goto('https://studentmail.ukf.sk/webmail/', { waitUntil: 'networkidle' });
+  await page.fill('input[name="_user"]', process.env.EMAIL);
+  await page.fill('input[name="_pass"]', process.env.PASSWORD);
   await page.click('input[type="submit"]');
-  await page.waitForNavigation({ waitUntil: 'networkidle2' });
+  await page.waitForLoadState('networkidle');
 
   await page.waitForSelector('tr.message', { timeout: 10000 });
+
   const emails = await page.evaluate(() => {
     const rows = document.querySelectorAll('tr.message.unread');
     return Array.from(rows).map(row => {
@@ -30,18 +33,16 @@ async function checkEmails() {
       const subjectEl = row.querySelector('td.subject a');
       const fromEl = row.querySelector('td.from span');
       const dateEl = row.querySelector('td.date');
-
       return {
         uid,
         subject: subjectEl?.innerText?.trim() || '(без темы)',
         sender: fromEl?.getAttribute('title') || fromEl?.innerText || 'Неизвестно',
         date: dateEl?.innerText?.trim() || '',
-        link: subjectEl?.href || '',
       };
     });
   });
 
-  console.log(`📬 Найдено новых писем: ${emails.length}`);
+  console.log(`New messages: ${emails.length}`);
 
   for (const email of emails) {
     if (seenIds.has(email.uid)) continue;
@@ -49,7 +50,7 @@ async function checkEmails() {
 
     await page.goto(
         `https://studentmail.ukf.sk/webmail/?_task=mail&_action=show&_mbox=INBOX&_uid=${email.uid}`,
-        { waitUntil: 'networkidle2' }
+        { waitUntil: 'networkidle' }
     );
 
     await page.waitForSelector('#messagebody', { timeout: 8000 }).catch(() => {});
@@ -61,7 +62,7 @@ async function checkEmails() {
     const safe = (str) => str.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
 
     const text =
-        `📧 *Новое письмо*\n\n` +
+        `📧 *New message*\n\n` +
         `*От:* ${safe(email.sender)}\n` +
         `*Тема:* ${safe(email.subject)}\n` +
         `*Дата:* ${safe(email.date)}\n\n` +
@@ -71,9 +72,9 @@ async function checkEmails() {
       parse_mode: 'MarkdownV2'
     });
 
-    console.log(`✅ Отправлено: ${email.subject}`);
+    console.log(`Sender: ${email.subject}`);
 
-    await page.goto('https://studentmail.ukf.sk/webmail/?_task=mail', { waitUntil: 'networkidle2' });
+    await page.goto('https://studentmail.ukf.sk/webmail/?_task=mail', { waitUntil: 'networkidle' });
     await page.waitForSelector('tr.message', { timeout: 10000 });
   }
 
@@ -81,13 +82,13 @@ async function checkEmails() {
 }
 
 async function main() {
-  console.log('🤖 Бот запущен, проверяю почту каждые 60 секунд...');
+  console.log('Checking new messages');
 
   while (true) {
     try {
       await checkEmails();
     } catch (err) {
-      console.error('❌ Ошибка:', err.message);
+      console.error('Error:', err.message);
     }
 
     await new Promise(resolve => setTimeout(resolve, 60_000));
